@@ -1,0 +1,1 @@
+For installation instructions, see `docs/INSTALL.md` in the source checkout for this release. The local Windows portable build entry point is `scripts/msvc/package-exe.bat`; its application target is `dist/autocode/autocode.exe`.

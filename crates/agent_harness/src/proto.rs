@@ -1,0 +1,864 @@
+use std::{path::PathBuf, sync::Arc};
+
+use serde::{Deserialize, Serialize};
+
+/// Per-run support directory owner. Dropping the lease removes only its own
+/// generation directory; it never touches native history directories.
+#[derive(Debug)]
+pub struct RunSupportLease {
+    path: PathBuf,
+}
+
+impl RunSupportLease {
+    pub fn create(path: PathBuf) -> std::io::Result<Self> {
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for RunSupportLease {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Per-run context. Kept in memory and deliberately not serializable.
+#[derive(Debug, Default)]
+pub struct LaunchContext {
+    pub chat_id: String,
+    pub generation: u64,
+    pub launch: Option<LaunchSpec>,
+    pub support: Option<RunSupportLease>,
+    pub gateway: Option<Arc<crate::gateway::GatewayServer>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LaunchSpec {
+    pub executable: PathBuf,
+    pub prefix_args: Vec<String>,
+    pub config_dir: Option<PathBuf>,
+    /// Opaque names retained in generated metadata; values are resolved only for this child.
+    pub env_refs: Vec<String>,
+    /// Secrets are held in memory and injected directly into the child process.
+    pub env: Vec<(String, model_provider::Secret)>,
+}
+
+/// Non-sensitive catalog query context. It is explicit so catalog discovery
+/// cannot silently read another chat's process-wide configuration.
+#[derive(Debug, Clone, Default)]
+pub struct CatalogContext {
+    pub launch: Option<LaunchSpec>,
+    pub source_revision: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HarnessId {
+    ClaudeCode,
+    Codex,
+    Opencode,
+    Pi,
+    Omp,
+    Dsh,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningLevel {
+    Off,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+    Ultra,
+    /// xhigh plus a harness-specific setting.
+    Ultracode,
+    /// Driven by a prompt prefix.
+    Ultrathink,
+}
+
+impl ReasoningLevel {
+    pub(crate) fn thinking_level(self) -> Result<&'static str, crate::HarnessError> {
+        match self {
+            Self::Off => Ok("off"),
+            Self::Minimal => Ok("minimal"),
+            Self::Low => Ok("low"),
+            Self::Medium => Ok("medium"),
+            Self::High => Ok("high"),
+            Self::XHigh => Ok("xhigh"),
+            Self::Max => Ok("max"),
+            Self::Ultra | Self::Ultracode | Self::Ultrathink => Err(crate::HarnessError::Protocol("This engine does not support the selected reasoning level".into())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxLevel {
+    ReadOnly,
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    Ask,
+    AcceptEdits,
+    #[default]
+    Auto,
+    DontAsk,
+    ReadOnly,
+    ApproveForMe,
+    FullAccess,
+}
+
+impl PermissionMode {
+    pub fn choices(harness: HarnessId) -> &'static [PermissionMode] {
+        match harness {
+            HarnessId::ClaudeCode => &[
+                Self::Ask,
+                Self::AcceptEdits,
+                Self::Auto,
+                Self::DontAsk,
+                Self::FullAccess,
+            ],
+            HarnessId::Codex => &[
+                Self::ReadOnly,
+                Self::Auto,
+                Self::ApproveForMe,
+                Self::FullAccess,
+            ],
+            HarnessId::Opencode | HarnessId::Pi | HarnessId::Omp | HarnessId::Dsh => {
+                &[Self::Ask, Self::AcceptEdits, Self::Auto, Self::FullAccess]
+            }
+        }
+    }
+
+    /// Falls back to `Auto` for modes the harness doesn't offer.
+    pub fn for_harness(self, harness: HarnessId) -> Self {
+        if Self::choices(harness).contains(&self) {
+            self
+        } else {
+            Self::Auto
+        }
+    }
+
+    pub fn skips_prompts(self) -> bool {
+        self == Self::FullAccess
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SteeringMode {
+    StepBoundary,
+    TurnBoundary,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Model {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub reasoning_levels: Vec<ReasoningLevel>,
+    #[serde(default)]
+    pub options: Vec<ModelOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelOption {
+    pub id: String,
+    pub label: String,
+    pub choices: Vec<ModelOptionChoice>,
+    pub default_choice: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelOptionChoice {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRequest {
+    pub prompt: String,
+    pub model: Option<String>,
+    pub reasoning: Option<ReasoningLevel>,
+    /// Option id to choice id.
+    #[serde(default)]
+    pub model_options: serde_json::Map<String, serde_json::Value>,
+    pub cwd: String,
+    #[serde(default)]
+    pub permission: PermissionMode,
+    /// Harness-native session id.
+    pub resume: Option<String>,
+    /// Harness-native session id to copy into a new session; ignored when `resume` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork: Option<String>,
+    /// Absolute image file paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<SkillRef>,
+    /// Context size in tokens at which the agent compacts; `None` keeps the agent's own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_compact_tokens: Option<u64>,
+    /// Lets Claude Code use the browser through the Claude in Chrome extension.
+    #[serde(default)]
+    pub chrome: bool,
+    /// A `PromptRecorded` id: the agent forgets that prompt and everything after it before this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drop_prompt: Option<String>,
+    /// The agent doesn't keep this run as a saved chat.
+    #[serde(default)]
+    pub ephemeral: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalSession {
+    pub id: String,
+    pub title: String,
+    /// Unix seconds.
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+    pub path: Option<String>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRef {
+    pub name: String,
+    pub path: String,
+}
+
+/// Reappears in every segment of a run, so tool-id de-duplication must exempt it.
+pub const LIVE_PLAN_TOOL_ID: &str = "acp-plan";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ToolCall {
+    Exec {
+        command: String,
+    },
+    ReadFile {
+        path: String,
+    },
+    WriteFile {
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+    },
+    EditFile {
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        old_string: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        new_string: Option<String>,
+    },
+    ApplyPatch {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    Search {
+        pattern: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    Glob {
+        pattern: String,
+    },
+    WebFetch {
+        url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+    },
+    WebSearch {
+        query: String,
+    },
+    Todo {
+        #[serde(default)]
+        items: Vec<TodoItem>,
+    },
+    Mcp {
+        server: String,
+        tool: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input: Option<serde_json::Value>,
+    },
+    Unknown {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input: Option<serde_json::Value>,
+    },
+}
+
+impl ToolCall {
+    pub fn is_subagent_spawn(&self) -> bool {
+        let name = match self {
+            ToolCall::Unknown { name, .. } => name,
+            ToolCall::Mcp { tool, .. } => tool,
+            _ => return false,
+        };
+        name == "Agent" || name.starts_with("Agent: ")
+    }
+
+    pub fn subagent_model(&self) -> Option<&str> {
+        if !self.is_subagent_spawn() {
+            return None;
+        }
+        let input = match self {
+            ToolCall::Unknown { input, .. } | ToolCall::Mcp { input, .. } => input.as_ref()?,
+            _ => return None,
+        };
+        SUBAGENT_MODEL_KEYS
+            .iter()
+            .find_map(|key| input.get(key).and_then(serde_json::Value::as_str))
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+    }
+}
+
+/// In precedence order.
+pub const SUBAGENT_MODEL_KEYS: [&str; 4] = ["model", "modelId", "model_id", "subagent_model"];
+
+pub const SUBAGENT_INPUT_KEEP: [&str; 5] = [
+    "model",
+    "modelId",
+    "model_id",
+    "subagent_model",
+    "subagent_type",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TodoStatus {
+    #[default]
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl TodoStatus {
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "completed" | "complete" | "done" => Self::Completed,
+            "in_progress" | "inProgress" | "in-progress" | "active" => Self::InProgress,
+            _ => Self::Pending,
+        }
+    }
+}
+
+/// `done` stays authoritative for completion; build with [`TodoItem::new`] to keep both consistent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoItem {
+    pub text: String,
+    pub done: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_todo_status"
+    )]
+    pub status: Option<TodoStatus>,
+}
+
+impl TodoItem {
+    pub fn new(text: impl Into<String>, status: TodoStatus) -> Self {
+        Self {
+            text: text.into(),
+            done: status == TodoStatus::Completed,
+            status: (status == TodoStatus::InProgress).then_some(status),
+        }
+    }
+
+    pub fn status(&self) -> TodoStatus {
+        if self.done {
+            TodoStatus::Completed
+        } else {
+            self.status.unwrap_or_default()
+        }
+    }
+}
+
+// An unknown status must not fail the whole tool call.
+fn lenient_todo_status<'de, D>(deserializer: D) -> Result<Option<TodoStatus>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|v| serde_json::from_value(v).ok()))
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlashCommand {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_skill: bool,
+}
+
+/// `old_text: None` means a new file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDiff {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_text: Option<String>,
+    pub new_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInputQuestion {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub multi_select: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill: Option<String>,
+    #[serde(default)]
+    pub multiline: bool,
+    #[serde(default)]
+    pub accepts_typed_answer: bool,
+}
+
+impl UserInputQuestion {
+    /// Stable request-local option key; visible labels may repeat.
+    pub fn option_id(&self, index: usize) -> String {
+        format!("{}:{index}", self.id)
+    }
+
+    pub fn option_label(&self, key: &str) -> Option<&str> {
+        let (id, index) = key.split_once(':')?;
+        if id != self.id { return None; }
+        self.options.get(index.parse::<usize>().ok()?).map(String::as_str)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInputAnswer {
+    pub question_id: String,
+    pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DoneStatus {
+    Completed,
+    Interrupted,
+    Errored,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackgroundTaskKind {
+    Shell,
+    Agent,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundTaskInfo {
+    pub task_id: String,
+    pub kind: BackgroundTaskKind,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AgentEvent {
+    #[serde(rename_all = "camelCase")]
+    SessionStarted {
+        harness: HarnessId,
+        model: String,
+        #[serde(default)]
+        tools: Vec<String>,
+        cwd: String,
+        session_id: String,
+        assistant_message_id: String,
+    },
+    TextDelta {
+        text: String,
+    },
+    /// The mode the CLI actually started in, which can differ from the one asked for.
+    PermissionModeReported {
+        mode: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    GeneratedImage {
+        id: String,
+        path: String,
+        name: String,
+        mime_type: String,
+    },
+    ReasoningDelta {
+        text: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    AssistantMessageCompleted {
+        assistant_message_id: String,
+    },
+    ToolCall {
+        id: String,
+        call: ToolCall,
+    },
+    #[serde(rename_all = "camelCase")]
+    ToolResult {
+        id: String,
+        is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        diff: Option<ToolDiff>,
+    },
+    /// Missing fields keep the previous measurement; zero tokens is valid.
+    #[serde(rename_all = "camelCase")]
+    ContextUsage {
+        tokens: Option<u64>,
+        window: Option<u64>,
+    },
+    Compacting {
+        active: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    TaskStarted {
+        task_id: String,
+        tool_use_id: Option<String>,
+        kind: BackgroundTaskKind,
+        description: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    TaskFinished {
+        task_id: String,
+        status: DoneStatus,
+    },
+    /// The complete set of live background tasks; replaces any earlier set.
+    BackgroundTasksChanged {
+        tasks: Vec<BackgroundTaskInfo>,
+    },
+    Compacted {
+        tokens: Option<u64>,
+        manual: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+    },
+    #[serde(rename_all = "camelCase")]
+    AvailableCommands {
+        commands: Vec<SlashCommand>,
+    },
+    Error {
+        message: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    InputRequested {
+        request_id: String,
+        questions: Vec<UserInputQuestion>,
+    },
+    #[serde(rename_all = "camelCase")]
+    InputResolved {
+        request_id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Steered {
+        assistant_message_id: Option<String>,
+        next_assistant_message_id: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Done {
+        status: DoneStatus,
+        result: Option<String>,
+        error: Option<String>,
+        session_id: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    UserMessage {
+        text: String,
+    },
+    /// The agent saved a prompt the chat sent, under this id of its own.
+    PromptRecorded {
+        id: String,
+    },
+    TitleChanged {
+        title: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    CapabilitiesReported {
+        capabilities: HarnessCapabilities,
+    },
+    #[serde(rename_all = "camelCase")]
+    ModelReported {
+        model_id: String,
+        provider_id: Option<String>,
+        reasoning: Option<ReasoningLevel>,
+    },
+    #[serde(rename_all = "camelCase")]
+    SessionPersistenceReported { resumable: bool },
+    #[serde(rename_all = "camelCase")]
+    Subagent {
+        parent_tool_use_id: String,
+        event: Box<AgentEvent>,
+    },
+}
+
+/// Runtime capabilities reported by a harness handshake. Defaults are
+/// conservative: new drivers must opt into each behavior explicitly.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct HarnessCapabilities {
+    pub resume: bool,
+    pub history_replay: bool,
+    pub streaming: bool,
+    pub questions: bool,
+    pub tool_permissions: bool,
+    pub model_switch: bool,
+    pub compact: bool,
+    pub steer: bool,
+    pub images: bool,
+    pub native_fork: bool,
+    pub drop_prompt: bool,
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[test]
+    fn capabilities_default_is_conservative_and_serializable() {
+        let capabilities = HarnessCapabilities::default();
+        assert!(!capabilities.resume);
+        assert!(!capabilities.model_switch);
+        let encoded = serde_json::to_value(capabilities).unwrap();
+        assert_eq!(encoded["resume"], false);
+        assert_eq!(
+            serde_json::from_value::<HarnessCapabilities>(encoded).unwrap(),
+            capabilities
+        );
+    }
+
+    #[test]
+    fn support_lease_removes_only_owned_directory() {
+        let root = std::env::temp_dir().join(format!("autocode-support-{}", uuid::Uuid::new_v4()));
+        let path = root.join("chat").join("1-run");
+        let lease = RunSupportLease::create(path.clone()).unwrap();
+        std::fs::write(lease.path().join("state"), "ok").unwrap();
+        assert!(path.exists());
+        drop(lease);
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn question_option_ids_are_unique_for_duplicate_labels() {
+        let question = UserInputQuestion {
+            id: "q1".into(),
+            header: "Question".into(),
+            question: "Pick".into(),
+            options: vec!["same".into(), "same".into()],
+            multi_select: false,
+            prefill: None,
+            multiline: false,
+            accepts_typed_answer: false,
+        };
+        assert_ne!(question.option_id(0), question.option_id(1));
+        assert_eq!(question.option_id(0), "q1:0");
+        assert_eq!(question.option_label("q1:1"), Some("same"));
+        assert_eq!(question.option_label("q1:2"), None);
+    }
+
+    #[test]
+    fn ability_events_round_trip() {
+        let event = AgentEvent::CapabilitiesReported {
+            capabilities: HarnessCapabilities {
+                resume: true,
+                streaming: true,
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            serde_json::from_value::<AgentEvent>(serde_json::to_value(&event).unwrap()).unwrap(),
+            event
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_event_round_trips() {
+        let ev = AgentEvent::ToolCall {
+            id: "t1".into(),
+            call: ToolCall::Exec {
+                command: "cargo test".into(),
+            },
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert_eq!(serde_json::from_str::<AgentEvent>(&json).unwrap(), ev);
+    }
+
+    #[test]
+    fn subagent_model_reads_every_spelling_and_only_off_a_spawn() {
+        let spawn = |input: serde_json::Value| ToolCall::Unknown {
+            name: "Agent: scan".into(),
+            input: Some(input),
+        };
+        for key in SUBAGENT_MODEL_KEYS {
+            let call = spawn(serde_json::json!({ key: "haiku" }));
+            assert_eq!(call.subagent_model(), Some("haiku"), "key {key}");
+        }
+        assert_eq!(
+            ToolCall::Mcp {
+                server: "s".into(),
+                tool: "Agent: scan".into(),
+                input: Some(serde_json::json!({ "model": "sonnet" })),
+            }
+            .subagent_model(),
+            Some("sonnet")
+        );
+        assert_eq!(
+            ToolCall::Unknown {
+                name: "Bash".into(),
+                input: Some(serde_json::json!({ "model": "haiku" })),
+            }
+            .subagent_model(),
+            None
+        );
+        assert_eq!(
+            spawn(serde_json::json!({ "model": " " })).subagent_model(),
+            None
+        );
+        assert_eq!(
+            spawn(serde_json::json!({ "prompt": "x" })).subagent_model(),
+            None
+        );
+        assert_eq!(
+            ToolCall::Unknown {
+                name: "Agent".into(),
+                input: None
+            }
+            .subagent_model(),
+            None
+        );
+        assert_eq!(
+            spawn(serde_json::json!({ "model": 5 })).subagent_model(),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod generated_image_tests {
+    use super::*;
+
+    #[test]
+    fn generated_image_event_round_trip() {
+        let event = AgentEvent::GeneratedImage {
+            id: "item:image".into(),
+            path: "/uploads/generated.png".into(),
+            name: "generated.png".into(),
+            mime_type: "image/png".into(),
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["type"], "generatedImage");
+        assert_eq!(value["mimeType"], "image/png");
+        assert_eq!(serde_json::from_value::<AgentEvent>(value).unwrap(), event);
+    }
+}
+
+#[cfg(test)]
+mod todo_item_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_items_without_status_derive_from_done() {
+        let done: TodoItem = serde_json::from_value(json!({ "text": "a", "done": true })).unwrap();
+        let open: TodoItem = serde_json::from_value(json!({ "text": "b", "done": false })).unwrap();
+        assert_eq!(done.status(), TodoStatus::Completed);
+        assert_eq!(open.status(), TodoStatus::Pending);
+        assert_eq!(open.status, None);
+    }
+
+    #[test]
+    fn only_in_progress_adds_a_field_so_other_docs_are_unchanged() {
+        let pending = serde_json::to_value(TodoItem::new("a", TodoStatus::Pending)).unwrap();
+        let done = serde_json::to_value(TodoItem::new("b", TodoStatus::Completed)).unwrap();
+        let active = serde_json::to_value(TodoItem::new("c", TodoStatus::InProgress)).unwrap();
+        assert_eq!(pending, json!({ "text": "a", "done": false }));
+        assert_eq!(done, json!({ "text": "b", "done": true }));
+        assert_eq!(
+            active,
+            json!({ "text": "c", "done": false, "status": "inProgress" })
+        );
+    }
+
+    #[test]
+    fn unknown_status_falls_back_to_done_instead_of_failing_the_call() {
+        let call: ToolCall = serde_json::from_value(json!({
+            "kind": "todo",
+            "items": [
+                { "text": "a", "done": false, "status": "blocked" },
+                { "text": "b", "done": true, "status": 7 },
+            ]
+        }))
+        .unwrap();
+        let ToolCall::Todo { items } = call else {
+            panic!("expected a todo call");
+        };
+        assert_eq!(items[0].status(), TodoStatus::Pending);
+        assert_eq!(items[1].status(), TodoStatus::Completed);
+    }
+
+    #[test]
+    fn done_outranks_a_stale_status() {
+        let item = TodoItem {
+            text: "a".into(),
+            done: true,
+            status: Some(TodoStatus::InProgress),
+        };
+        assert_eq!(item.status(), TodoStatus::Completed);
+    }
+
+    #[test]
+    fn harness_status_strings_decode() {
+        assert_eq!(TodoStatus::parse("completed"), TodoStatus::Completed);
+        assert_eq!(TodoStatus::parse("in_progress"), TodoStatus::InProgress);
+        assert_eq!(TodoStatus::parse("inProgress"), TodoStatus::InProgress);
+        assert_eq!(TodoStatus::parse("pending"), TodoStatus::Pending);
+        assert_eq!(TodoStatus::parse("cancelled"), TodoStatus::Pending);
+        assert_eq!(TodoStatus::parse(""), TodoStatus::Pending);
+    }
+}

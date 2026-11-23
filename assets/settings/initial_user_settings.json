@@ -1,0 +1,17 @@
+// autocode settings
+//
+// For information on how to configure autocode, see the autocode
+// documentation: https://zed.dev/docs/configuring-zed
+//
+// To see all of autocode's default settings without changing your
+// custom settings, run `autocode: open default settings` from the
+// command palette (cmd-shift-p / ctrl-shift-p)
+{
+  "ui_font_size": 16,
+  "buffer_font_size": 15,
+  "theme": {
+    "mode": "system",
+    "light": "autocode Light",
+    "dark": "autocode Dark",
+  },
+}

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+repo=${AUTOCODE_RELEASE_REPOSITORY:?set AUTOCODE_RELEASE_REPOSITORY to your own owner/repository}
+curl -fsS "https://api.github.com/repos/$repo/releases?per_page=100" | jq '.[] | {tag: .tag_name, downloads: ([.assets[].download_count] | add)}'
