@@ -2,6 +2,19 @@ const assert = require("node:assert/strict");
 const readline = require("node:readline");
 const args = process.argv.slice(2);
 const scenario = args[0];
+if (scenario === "startup-exit" || scenario === "invalid-frame-exit") {
+  if (scenario === "invalid-frame-exit") require("node:fs").writeSync(1, "not JSON\n");
+  // Windows libuv duplicates fd 1; closing only the descriptor leaves its pipe alive.
+  process.stdout._handle.close();
+  if (process.platform === "win32") require("node:fs").closeSync(1);
+  setTimeout(() => {
+    process.stderr.write("Bun runtime must be >= 1.4.4 (found v1.4.0)\n", () => {
+      process.exit(1);
+    });
+  }, 50);
+  setInterval(() => {}, 1000);
+  return;
+}
 const models = [
   {provider: "native", id: "first", name: "First model", reasoning: false},
   {provider: "native", id: "answer/model", name: "Answer model", reasoning: true},

@@ -20,7 +20,7 @@ impl OmpHarness {
     pub fn with_executable(mut self, executable: impl Into<PathBuf>) -> Self { self.executable = Some(executable.into()); self }
     fn executable(&self) -> PathBuf { self.executable.clone().or_else(|| std::env::var_os("OMP_EXECUTABLE").map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("omp")) }
 
-    fn spawn(&self, spec: Option<&LaunchSpec>, cwd: &str, permission: PermissionMode, catalog: bool, resume: Option<&str>, ephemeral: bool, support: Option<&std::path::Path>) -> Result<(Child, Wire, crate::StderrTail), HarnessError> {
+    fn spawn(&self, spec: Option<&LaunchSpec>, cwd: &str, permission: PermissionMode, catalog: bool, resume: Option<&str>, ephemeral: bool, support: Option<&std::path::Path>) -> Result<(Child, Wire), HarnessError> {
         let executable = spec.map(|spec| spec.executable.clone()).unwrap_or_else(|| self.executable());
         let mut command = command(&executable);
         crate::compose_child_path(&mut command, &executable);
@@ -45,7 +45,7 @@ impl OmpHarness {
         let stdin = child.stdin.take().ok_or_else(|| protocol("omp has no stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| protocol("omp has no stdout"))?;
         let stderr = crate::StderrTail::default();
-        if let Some(output) = child.stderr.take() {
+        let stderr_task = child.stderr.take().map(|output| {
             let stderr = stderr.clone();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(output).lines();
@@ -56,9 +56,9 @@ impl OmpHarness {
                         Err(error) => { log::warn!("omp.stderr.read_failed: {error}"); return; }
                     }
                 }
-            });
-        }
-        Ok((child, Wire { stdin, lines: BufReader::new(stdout).lines(), chunks: Chunks::default(), next_id: 0 }, stderr))
+            })
+        });
+        Ok((child, Wire { stdin, lines: BufReader::new(stdout).lines(), chunks: Chunks::default(), next_id: 0, stderr, stderr_task }))
     }
 }
 
@@ -71,11 +71,11 @@ impl Harness for OmpHarness {
     fn reasoning_levels(&self) -> &[ReasoningLevel] { &[ReasoningLevel::Off, ReasoningLevel::Minimal, ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::High, ReasoningLevel::XHigh, ReasoningLevel::Max] }
 
     async fn models(&self, context: CatalogContext) -> Result<Vec<Model>, HarnessError> {
-        let (_child, mut wire, _stderr) = self.spawn(context.launch.as_ref(), "", PermissionMode::Auto, true, None, true, None)?;
+        let (mut child, mut wire) = self.spawn(context.launch.as_ref(), "", PermissionMode::Auto, true, None, true, None)?;
         tokio::time::timeout(Duration::from_secs(20), async {
-            while wire.read().await?["type"] != "ready" {}
-            wire.request("negotiate_protocol", json!({"protocolVersion":2})).await?;
-            let data = wire.request("get_available_models", json!({})).await?;
+            while wire.read(&mut child).await?["type"] != "ready" {}
+            wire.request(&mut child, "negotiate_protocol", json!({"protocolVersion":2})).await?;
+            let data = wire.request(&mut child, "get_available_models", json!({})).await?;
             let models = data["models"].as_array().ok_or_else(|| protocol("OMP catalog has no models array"))?;
             models.iter().map(|model| {
                 let (provider, id) = model_identity(model)?;
@@ -92,11 +92,11 @@ impl Harness for OmpHarness {
 
     async fn run(&self, request: RunRequest, controls: RunControls, launch: LaunchContext) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         if let Some(level) = request.reasoning { level.thinking_level()?; }
-        let (mut child, wire, stderr) = self.spawn(launch.launch.as_ref(), &request.cwd, request.permission, false, request.resume.as_deref(), request.ephemeral, launch.support.as_ref().map(|support| support.path()))?;
+        let (mut child, wire) = self.spawn(launch.launch.as_ref(), &request.cwd, request.permission, false, request.resume.as_deref(), request.ephemeral, launch.support.as_ref().map(|support| support.path()))?;
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {
             let _launch = launch;
-            if let Err(error) = run_process(&mut child, wire, request, controls, &tx, &stderr).await {
+            if let Err(error) = run_process(&mut child, wire, request, controls, &tx).await {
                 if tx.send(Err(error)).await.is_err() { return; }
             }
         });
@@ -109,14 +109,36 @@ struct Wire {
     lines: Lines<BufReader<tokio::process::ChildStdout>>,
     chunks: Chunks,
     next_id: u64,
+    stderr: crate::StderrTail,
+    stderr_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+async fn stdout_closed(child: &mut Child, stderr: &crate::StderrTail, stderr_task: Option<&mut tokio::task::JoinHandle<()>>) -> Result<HarnessError, HarnessError> {
+    // EOF can precede process exit and the stderr reader's final poll.
+    let status = match tokio::time::timeout(Duration::from_millis(250), child.wait()).await {
+        Ok(result) => Some(result.map_err(HarnessError::Io)?),
+        Err(_) => None,
+    };
+    if let Some(task) = stderr_task {
+        if let Ok(Err(error)) = tokio::time::timeout(Duration::from_millis(250), task).await {
+            log::warn!("omp.stderr.task_failed: {error}");
+        }
+    }
+    Ok(protocol(match status {
+        Some(status) => crate::crash_message("OMP", Some(status), stderr),
+        None => match stderr.snapshot() {
+            Some(tail) => format!("omp stdout closed: {}", crate::redact_secrets(&tail)),
+            None => "omp stdout closed".to_owned(),
+        },
+    }))
 }
 
 impl Wire {
-    async fn read(&mut self) -> Result<Value, HarnessError> {
+    async fn read(&mut self, child: &mut Child) -> Result<Value, HarnessError> {
         loop {
             let Some(line) = self.lines.next_line().await.map_err(HarnessError::Io)? else {
                 self.chunks.finish()?;
-                return Err(protocol("omp stdout closed"));
+                return Err(stdout_closed(child, &self.stderr, self.stderr_task.as_mut()).await?);
             };
             if line.len() + 1 > OMP_LINE_LIMIT { return Err(protocol("omp physical line exceeds limit")); }
             let frame = serde_json::from_str(&line).map_err(|error| protocol(format!("omp frame is not JSON: {error}")))?;
@@ -140,10 +162,10 @@ impl Wire {
         Ok(id)
     }
 
-    async fn request(&mut self, kind: &str, fields: Value) -> Result<Value, HarnessError> {
+    async fn request(&mut self, child: &mut Child, kind: &str, fields: Value) -> Result<Value, HarnessError> {
         let id = self.send(kind, fields).await?;
         loop {
-            let frame = self.read().await?;
+            let frame = self.read(child).await?;
             if frame["type"] == "response" {
                 check_response(&frame)?;
                 if frame["id"] == id { return Ok(frame["data"].clone()); }
@@ -152,7 +174,7 @@ impl Wire {
     }
 }
 
-async fn run_process(child: &mut Child, mut wire: Wire, request: RunRequest, mut controls: RunControls, tx: &mpsc::Sender<Result<AgentEvent, HarnessError>>, stderr: &crate::StderrTail) -> Result<(), HarnessError> {
+async fn run_process(child: &mut Child, mut wire: Wire, request: RunRequest, mut controls: RunControls, tx: &mpsc::Sender<Result<AgentEvent, HarnessError>>) -> Result<(), HarnessError> {
     let mut startup = VecDeque::new();
     let mut pending = None::<(String, &'static str)>;
     let mut prompt_id = None::<String>;
@@ -177,16 +199,8 @@ async fn run_process(child: &mut Child, mut wire: Wire, request: RunRequest, mut
                 wire.write(&response).await?;
                 if let Some(id) = response["id"].as_str() { emit(tx, AgentEvent::InputResolved { request_id: id.to_owned() }).await?; }
             }
-            frame = wire.read() => {
-                let frame = match frame {
-                    Ok(frame) => frame,
-                    Err(error) => {
-                        if let Some(status) = child.try_wait().map_err(HarnessError::Io)? {
-                            return Err(protocol(crate::crash_message("OMP", Some(status), stderr)));
-                        }
-                        return Err(error);
-                    }
-                };
+            frame = wire.read(child) => {
+                let frame = frame?;
                 match frame["type"].as_str().unwrap_or_default() {
                     "ready" => {
                         emit(tx, AgentEvent::CapabilitiesReported { capabilities: crate::HarnessCapabilities { resume: true, streaming: true, questions: true, tool_permissions: true, model_switch: true, steer: true, ..Default::default() } }).await?;
@@ -373,6 +387,18 @@ fn ui_response(frame: &Value, questions: &[UserInputQuestion], answers: Option<&
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn stdout_eof_does_not_wait_forever_for_a_live_process() {
+        let mut child = command("node").args(["-e", "setInterval(() => {}, 1000)"])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true).spawn().unwrap();
+        let stderr = crate::StderrTail::default();
+        stderr.push("Bun runtime must be >= 1.4.4 (found v1.4.0)");
+        let error = tokio::time::timeout(Duration::from_secs(3), stdout_closed(&mut child, &stderr, None)).await.unwrap().unwrap();
+        assert!(matches!(error, HarnessError::Protocol(message) if message.contains("omp stdout closed") && message.contains("Bun runtime must be >= 1.4.4")));
+        assert!(child.try_wait().unwrap().is_none());
+        child.kill().await.unwrap();
+    }
+
 
     #[test]
     fn ask_answers_preserve_selection_and_free_text() {

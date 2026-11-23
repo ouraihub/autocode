@@ -18,7 +18,7 @@ pub(crate) fn name(target: BackendTarget) -> &'static str {
     }
 }
 
-fn package(target: BackendTarget) -> (&'static str, &'static str) {
+pub(crate) fn package(target: BackendTarget) -> (&'static str, &'static str) {
     match target {
         BackendTarget::Pi => ("@earendil-works/pi-coding-agent", "1.4.0"),
         BackendTarget::Omp => ("@oh-my-pi/pi-coding-agent", "18.14.2"),
@@ -83,10 +83,21 @@ async fn remove_directory(path: &Path) -> Result<()> {
     }
 }
 
+fn supported_bun_version(version: &str) -> bool {
+    let version = version.trim().trim_start_matches('v');
+    let Some(core) = version.split('-').next() else { return false; };
+    let mut parts = core.split('.').map(str::parse::<u64>);
+    matches!((parts.next(), parts.next(), parts.next()),
+        (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch))) if (major, minor, patch) >= (1, 4, 4))
+}
+
 pub(crate) async fn bun() -> Result<PathBuf> {
     if let Some(executable) = crate::engine_launch::find_program(Path::new("bun")) {
         if !crate::engine_launch::is_shell_shim(&executable) {
-            return Ok(executable);
+            let output = new_command(&executable).arg("--version").output().await.context("check Bun runtime version")?;
+            if output.status.success() && supported_bun_version(&String::from_utf8_lossy(&output.stdout)) {
+                return Ok(executable);
+            }
         }
     }
     ensure!(cfg!(all(windows, target_arch = "x86_64")),
@@ -178,6 +189,13 @@ pub(crate) async fn uninstall(target: BackendTarget) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn old_bun_does_not_satisfy_omp_runtime_requirement() {
+        assert!(!supported_bun_version("1.4.0\n"));
+        assert!(!supported_bun_version("not a version"));
+        assert!(supported_bun_version("1.4.4\n"));
+        assert!(supported_bun_version("v1.5.0"));
+    }
 
     #[test]
     fn manifest_bin_rejects_traversal_and_accepts_an_existing_entry() {

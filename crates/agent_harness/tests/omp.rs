@@ -104,3 +104,26 @@ async fn missing_selected_model_fails_instead_of_using_an_unrelated_default() {
     assert!(matches!(events.last(), Some(Err(HarnessError::Protocol(message))) if message == "OMP model not available: native/missing"));
     assert!(!events.iter().any(|event| matches!(event, Ok(AgentEvent::TextDelta { .. }))));
 }
+
+#[tokio::test]
+async fn catalog_startup_exit_reports_stderr_after_stdout_eof() {
+    let error = OmpHarness::new().models(CatalogContext { launch: Some(launch("startup-exit")), ..Default::default() }).await.unwrap_err();
+    assert!(matches!(error, HarnessError::Protocol(message) if message.contains("Bun runtime must be >= 1.4.4 (found v1.4.0)")));
+}
+
+#[tokio::test]
+async fn run_startup_exit_reports_one_error_without_completion() {
+    let events = run("startup-exit", request()).await;
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], Err(HarnessError::Protocol(message)) if message.contains("Bun runtime must be >= 1.4.4 (found v1.4.0)")));
+}
+
+
+#[tokio::test]
+async fn invalid_frames_keep_the_original_protocol_error() {
+    let events = run("invalid-frame-exit", request()).await;
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], Err(HarnessError::Protocol(message)) if message.starts_with("omp frame is not JSON:")));
+    let error = OmpHarness::new().models(CatalogContext { launch: Some(launch("invalid-frame-exit")), ..Default::default() }).await.unwrap_err();
+    assert!(matches!(error, HarnessError::Protocol(message) if message.starts_with("omp frame is not JSON:")));
+}

@@ -10,6 +10,9 @@ use ui::prelude::*;
 use crate::{AgentChatSettings, AgentKind, provider_services::ProviderServices};
 
 mod view;
+mod uninstall;
+#[cfg(test)]
+mod tests;
 
 type Service = model_provider::ProviderService<crate::provider_store::ProviderDb, crate::provider_services::GpuiCredentialBroker>;
 
@@ -24,6 +27,7 @@ pub struct CodingPartnersView {
     loading: bool,
     saving: bool,
     installing: Option<BackendTarget>,
+    removing: bool,
     status: Option<(String, bool)>,
     focus: FocusHandle,
     pub open_model_services: bool,
@@ -50,7 +54,7 @@ impl CodingPartnersView {
         let mut this = Self {
             service: ProviderServices::global(cx).service(), selected: BackendTarget::Pi,
             providers: Vec::new(), preferences: Vec::new(), installs: Vec::new(), search,
-            loading: false, saving: false, installing: None, status: None,
+            loading: false, saving: false, installing: None, removing: false, status: None,
             focus: cx.focus_handle(), open_model_services: false, _subscriptions: subscriptions,
         };
         let mut changes = this.service.subscribe_changes();
@@ -144,19 +148,18 @@ impl CodingPartnersView {
         }).detach_and_log_err(cx);
     }
 
-    fn install(&mut self, remove: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.installing.is_some() { return; }
         let target = self.selected;
         let node = crate::dsh_node_runtime(cx);
         self.installing = Some(target);
         self.status = None;
         cx.spawn_in(window, async move |this, cx| {
-            let result = if remove { crate::engine_launch::uninstall(target).await }
-                else { crate::engine_launch::install(target, node).await };
+            let result = crate::engine_launch::install(target, node).await;
             this.update_in(cx, |this, window, cx| {
                 this.installing = None;
                 this.status = Some(match result {
-                    Ok(()) => (if remove { t!("Built-in engine removed. System installations are unchanged.") } else { t!("Coding partner installed.") }.to_string(), false),
+                    Ok(()) => (t!("Coding partner installed.").to_string(), false),
                     Err(error) => (format!("{}: {error}", t!("Coding partner operation failed")), true),
                 });
                 this.reload(window, cx);

@@ -92,10 +92,22 @@ lines: a wrapping row in narrow windows and a vertical rail in wide windows.
   model/login configuration. A named provider restricts the managed model picker
   and request validation to that provider. **Reset** restores all enabled providers
   using their own access modes. Selection is independent for each engine.
-- **Install** uses app-owned engine directories and pinned packages; **Uninstall**
-  removes only the app-owned engine, never system installations or credentials.
-  Installation failures remain visible and can be retried. The footer opens the
-  existing Model Services page to configure providers and enable chat models.
+- **Install** uses app-owned engine directories and pinned packages. **Uninstall**
+  supports both built-in engines and identifiable npm/Bun/pnpm system packages.
+  System removal first verifies the package manager owns the discovered command,
+  then displays the manager, package, installation path and command for confirmation.
+  Unknown or conflicting ownership is rejected rather than deleting an executable.
+  Removal is blocked while agent chats are running and revalidates ownership after
+  confirmation. Package-manager failures remain visible; no automatic elevation or
+  command replay occurs. Chat history, model services, credentials and shared
+  runtimes are preserved. Other installed copies may still appear after refresh.
+  The footer opens the existing Model Services page to configure providers.
+
+OMP requires Bun 1.4.4 or newer. autocode checks the system runtime version and
+uses a checksum-verified, app-owned Bun when the system copy is older; it does
+not upgrade the system runtime. Windows Bun `.exe` shims are resolved to the
+package entry point before launch. Model discovery and chat runs use the same
+runtime resolution. Early process exits report stderr instead of only stdout EOF.
 
 ## Model services
 

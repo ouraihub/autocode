@@ -476,7 +476,16 @@ impl AgentStore {
         if catalog.loaded || catalog._task.is_some() {
             return;
         }
-        let discovery = spawn_agent_work(cx, async move { harness.models(CatalogContext::default()).await });
+        let target = agent_harness::routing::backend_target_for_harness(kind.harness_id());
+        let node = target.and_then(|_| crate::dsh_node_runtime(cx));
+        let discovery = spawn_agent_work(cx, async move {
+            let mut launch = LaunchContext::default();
+            if let Some(target) = target {
+                crate::engine_launch::apply(target, node, &mut launch).await
+                    .map_err(|error| agent_harness::HarnessError::Protocol(error.to_string()))?;
+            }
+            harness.models(CatalogContext { launch: launch.launch, ..Default::default() }).await
+        });
         let task = cx.spawn(async move |this, cx| {
             let models = match discovery.await {
                 Ok(Ok(models)) => {

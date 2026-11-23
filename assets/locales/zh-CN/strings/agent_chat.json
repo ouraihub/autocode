@@ -380,5 +380,18 @@
 "Built-in engine removed. System installations are unchanged.": "已移除内置引擎，系统安装保持不变。",
 "Coding partner installed.": "编码搭档已安装。",
 "Coding partner operation failed": "编码搭档操作失败",
-"Install DSH": "安装 DSH"
+"Install DSH": "安装 DSH",
+"Uninstalling…": "卸载中…",
+"Checking or removing the installed engine…": "正在核对安装来源或卸载引擎…",
+"Uninstall {agent}?": "卸载 {agent}？",
+"Could not uninstall coding partner": "无法卸载编码搭档",
+"Stop running agent chats before uninstalling a coding partner.": "请先停止正在运行的智能体对话，再卸载编码搭档。",
+"The installation changed. Refresh and confirm uninstall again.": "安装状态已改变，请刷新后重新确认卸载。",
+"Engine removed. Chat history, model services and credentials are unchanged. Another installation may still be detected.": "已卸载此引擎，聊天记录、模型服务和密钥保持不变。如存在其他安装，仍会被检测到。",
+"This removes the engine package from this computer. Chat history, model services, credentials and shared runtimes will be kept. Other applications using this engine may be affected.": "将从本机卸载该引擎软件包，保留聊天记录、模型服务、密钥及共享运行时。其他使用此引擎的应用也可能受影响。",
+"Package manager": "包管理器",
+"Package": "软件包",
+"Installation directory": "安装目录",
+"Executable": "可执行文件",
+"Command": "执行命令"
 }

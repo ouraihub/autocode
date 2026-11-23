@@ -26,12 +26,12 @@ impl CodingPartnersView {
                 .when(path.is_none(), |row| row.child(
                     Button::new("coding-install", if self.installing == Some(target) { t!("Installing…") } else { t!("Install") })
                         .style(ButtonStyle::Outlined).disabled(busy || self.loading)
-                        .on_click(cx.listener(|this, _, window, cx| this.install(false, window, cx)))))
-                .when(builtin, |row| row.child(
-                    Button::new("coding-uninstall", t!("Uninstall")).style(ButtonStyle::Outlined).disabled(busy)
-                        .on_click(cx.listener(|this, _, window, cx| this.install(true, window, cx))))))
+                        .on_click(cx.listener(|this, _, window, cx| this.install(window, cx)))))
+                .when(path.is_some(), |row| row.child(
+                    Button::new("coding-uninstall", if self.removing { t!("Uninstalling…") } else { t!("Uninstall") }).style(ButtonStyle::Outlined).disabled(busy || self.loading)
+                        .on_click(cx.listener(|this, _, window, cx| this.confirm_uninstall(window, cx))))))
             .children(path.map(|path| div().min_w_0().truncate().child(caption(path.display().to_string()))))
-            .when(self.installing == Some(target), |column| column.child(caption(t!("First installation downloads a runtime and can take several minutes."))))
+            .when(self.installing == Some(target), |column| column.child(caption(if self.removing { t!("Checking or removing the installed engine…") } else { t!("First installation downloads a runtime and can take several minutes.") })))
             .when_some(self.status.clone(), |column, (message, failed)| column.child(
                 Label::new(message).size(LabelSize::Small).color(if failed { Color::Error } else { Color::Success })))
             .into_any_element()
@@ -83,7 +83,7 @@ impl Render for CodingPartnersView {
             .children(BackendTarget::ALL.into_iter().map(|target| {
                 let selected = self.selected == target;
                 let install = self.installs.iter().find(|(backend, _, _)| *backend == target);
-                let status = if self.installing == Some(target) { t!("Installing…") }
+                let status = if self.installing == Some(target) { if self.removing { t!("Uninstalling…") } else { t!("Installing…") } }
                     else if self.loading { t!("Loading…") }
                     else if let Some((_, Some(_), builtin)) = install { if *builtin { t!("Built-in") } else { t!("System") } }
                     else { t!("Not installed") };

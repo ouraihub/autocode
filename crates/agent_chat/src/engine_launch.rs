@@ -55,6 +55,17 @@ pub(crate) async fn uninstall(target: BackendTarget) -> Result<()> {
 
 fn shim_entry(shim: &Path, target: BackendTarget) -> Result<Option<PathBuf>> {
     let Some(directory) = shim.parent() else { return Ok(None); };
+    if shim.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("exe")) {
+        if !shim.with_extension("bunx").is_file() { return Ok(None); }
+        for root in directory.ancestors() {
+            let manifest = dsh_install::manifest(root, target);
+            if manifest.is_file() {
+                return dsh_install::entry_from_manifest(&manifest, target).map(Some)
+                    .with_context(|| format!("read {} Bun command manifest", name(target)));
+            }
+        }
+        bail!("{} Bun command shim has no package manifest", name(target));
+    }
     let manifest = dsh_install::manifest(directory, target);
     if manifest.is_file() {
         return dsh_install::entry_from_manifest(&manifest, target).map(Some)
@@ -93,7 +104,7 @@ pub(crate) async fn apply(target: BackendTarget, node: Option<NodeRuntime>, laun
     };
     let script = is_managed || executable.extension().is_some_and(|ext|
         ["js", "mjs", "cjs", "ts"].iter().any(|value| ext.eq_ignore_ascii_case(value)));
-    let entry = if script || executable.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe")) {
+    let entry = if script {
         None
     } else {
         let entry = shim_entry(&executable, target)?;
@@ -114,4 +125,27 @@ pub(crate) async fn apply(target: BackendTarget, node: Option<NodeRuntime>, laun
         spec.prefix_args.insert(0, entry.to_string_lossy().into_owned());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bun_executable_shim_uses_package_entry_instead_of_old_runtime() {
+        let directory = tempfile::tempdir().unwrap();
+        let bin = directory.path().join(".bun/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let shim = bin.join("omp.exe");
+        std::fs::write(&shim, b"binary shim").unwrap();
+        std::fs::write(shim.with_extension("bunx"), b"shim metadata").unwrap();
+        let manifest = dsh_install::manifest(directory.path(), BackendTarget::Omp);
+        let package = manifest.parent().unwrap();
+        std::fs::create_dir_all(package.join("dist")).unwrap();
+        std::fs::write(package.join("dist/cli.js"), "").unwrap();
+        std::fs::write(&manifest, r#"{"bin":{"omp":"dist/cli.js"}}"#).unwrap();
+        assert_eq!(shim_entry(&shim, BackendTarget::Omp).unwrap(), Some(package.join("dist/cli.js").canonicalize().unwrap()));
+        std::fs::remove_file(shim.with_extension("bunx")).unwrap();
+        assert_eq!(shim_entry(&shim, BackendTarget::Omp).unwrap(), None);
+    }
 }

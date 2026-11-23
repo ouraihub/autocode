@@ -8,6 +8,7 @@ mod model_picker;
 mod model_services;
 mod dsh_install;
 mod engine_launch;
+mod engine_uninstall;
 mod coding_partners;
 mod notifications;
 mod provider_panel;
