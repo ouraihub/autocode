@@ -1123,6 +1123,8 @@ pub struct AgentChatSettingsContent {
     pub default_permission: Option<AgentChatDefaultPermissionContent>,
     /// Which agents appear in the new chat menu and in Continue Saved Chat.
     pub agents: Option<AgentChatAgentsContent>,
+    /// Preferred coding partner for new chats. Explicit per-agent commands keep their target.
+    pub default_agent: Option<AgentChatAgent>,
     /// What a message sent while the agent is working does.
     ///
     /// Default: "queue"

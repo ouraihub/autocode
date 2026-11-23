@@ -75,6 +75,28 @@ Result: **1 passed, 0 failed, 7 filtered out**, exit code 0; checks release look
 download, installation override, version state and restart path using a fake HTTP
 client. No real remote release or installer was executed.
 
+## Coding partners
+
+Open **Settings → Coding Partners / 编码搭档** to manage Pi, Oh My Pi and
+DeepSeek Harness. The page ports thinkrail-native's engine rail, installation
+status, default-engine control and single model-service source selector into
+autocode's existing GPUI settings window.
+Engine choices use evenly spaced, fixed-height cards with separate name and status
+lines: a wrapping row in narrow windows and a vertical rail in wide windows.
+
+- **Set as default** persists `agent_chat.default_agent`; the new-chat menus
+  offer a default **New Chat** entry, while explicit per-engine commands retain
+  their original target. Existing chats remain bound to their engine.
+- **Unified gateway** forces the selected engine's managed model requests through
+  autocode's authenticated local gateway. **Official** uses that engine's native
+  model/login configuration. A named provider restricts the managed model picker
+  and request validation to that provider. **Reset** restores all enabled providers
+  using their own access modes. Selection is independent for each engine.
+- **Install** uses app-owned engine directories and pinned packages; **Uninstall**
+  removes only the app-owned engine, never system installations or credentials.
+  Installation failures remain visible and can be retried. The footer opens the
+  existing Model Services page to configure providers and enable chat models.
+
 ## Model services
 
 Open Settings (`Ctrl+,`) and select **Model Services / 模型服务** in the left

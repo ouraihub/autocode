@@ -213,6 +213,7 @@ async fn preferences_default_then_save_and_conflict(_cx: &mut gpui::TestAppConte
 
     let mut updated = default.clone();
     updated.source = ConfigSource::Managed;
+    updated.provider_choice = Some(model_provider::EngineProviderChoice::Provider("pid".into()));
     updated.default_model = Some(ModelSelection::Managed {
         provider_id: "pid".into(),
         model_id: "mid".into(),
@@ -232,6 +233,7 @@ async fn preferences_default_then_save_and_conflict(_cx: &mut gpui::TestAppConte
     let loaded = db.load_preferences(BackendTarget::Pi).await.unwrap();
     assert_eq!(loaded.revision, 1);
     assert_eq!(loaded.source, ConfigSource::Managed);
+    assert_eq!(loaded.provider_choice, Some(model_provider::EngineProviderChoice::Provider("pid".into())));
 }
 
 #[gpui::test]

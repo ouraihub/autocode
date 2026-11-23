@@ -88,6 +88,7 @@ impl ProviderServices {
         self.service.clone()
     }
     pub fn models(&self) -> Vec<agent_harness::Model> { self.catalog.borrow().models() }
+    pub fn models_for(&self, target: model_provider::BackendTarget) -> Vec<agent_harness::Model> { self.catalog.borrow().models_for(target) }
     pub fn default_for(&self, target: model_provider::BackendTarget) -> Option<model_provider::AgentPreferences> { self.catalog.borrow().default_for(target).cloned() }
     pub(crate) fn model_label(&self, provider_id: &str, model_id: &str) -> Option<String> {
         let catalog = self.catalog.borrow();

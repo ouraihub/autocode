@@ -1,7 +1,7 @@
 mod components;
 mod page_data;
 
-use agent_chat::ModelServicesView;
+use agent_chat::{CodingPartnersView, ModelServicesView};
 use anyhow::{Context as _, Result};
 use editor::{Editor, EditorEvent};
 use futures::{StreamExt, channel::mpsc};
@@ -68,6 +68,7 @@ const SIDEBAR_WIDTH: Pixels = px(226.);
 const CONTENT_MIN_WIDTH: Pixels = px(400.);
 
 const MODEL_SERVICES_PAGE: &str = n!("Model Services");
+const CODING_PARTNERS_PAGE: &str = n!("Coding Partners");
 
 actions!(
     settings_editor,
@@ -705,6 +706,7 @@ fn open_settings_editor_to_page(
         }
         settings_window.has_query = false;
         settings_window.model_services_matches_query = true;
+        settings_window.coding_partners_matches_query = true;
         settings_window.filter_matches_to_file();
 
         let Some(navbar_entry_index) = settings_window
@@ -917,6 +919,9 @@ pub struct SettingsWindow {
     has_query: bool,
     model_services_matches_query: bool,
     model_services_view: Option<Entity<ModelServicesView>>,
+    coding_partners_matches_query: bool,
+    coding_partners_view: Option<Entity<CodingPartnersView>>,
+    coding_partners_subscription: Option<Subscription>,
     content_handles: Vec<Vec<Entity<NonFocusableHandle>>>,
     focus_handle: FocusHandle,
     navbar_focus_handle: Entity<NonFocusableHandle>,
@@ -2025,6 +2030,9 @@ impl SettingsWindow {
             has_query: false,
             model_services_matches_query: true,
             model_services_view: None,
+            coding_partners_matches_query: true,
+            coding_partners_view: None,
+            coding_partners_subscription: None,
             content_handles: vec![],
             focus_handle: cx.focus_handle(),
             navbar_focus_handle: NonFocusableHandle::new(
@@ -2194,6 +2202,8 @@ impl SettingsWindow {
                 let entry = &entries[index];
                 let included_in_search = if entry.title == MODEL_SERVICES_PAGE && entry.is_root {
                     self.model_services_matches_query
+                } else if entry.title == CODING_PARTNERS_PAGE && entry.is_root {
+                    self.coding_partners_matches_query
                 } else if let Some(item_index) = entry.item_index {
                     search_matches[entry.page_index][item_index]
                 } else {
@@ -2316,6 +2326,9 @@ impl SettingsWindow {
         self.model_services_matches_query = query_words
             .iter()
             .all(|query_word| title_matches_query_word(MODEL_SERVICES_PAGE, query_word));
+        self.coding_partners_matches_query = query_words
+            .iter()
+            .all(|query_word| title_matches_query_word(CODING_PARTNERS_PAGE, query_word));
         for match_index in match_indices {
             let SearchKeyLUTEntry {
                 page_index,
@@ -2350,6 +2363,7 @@ impl SettingsWindow {
             }
             self.has_query = false;
             self.model_services_matches_query = true;
+            self.coding_partners_matches_query = true;
             self.filter_matches_to_file();
             self.reset_list_state();
             cx.notify();
@@ -2584,7 +2598,9 @@ impl SettingsWindow {
         let first_entry = entries.peek().map(|(index, _)| (0, *index));
         let best_match = entries
             .enumerate()
-            .filter(|(_, (_, entry))| !entry.is_root || entry.title == MODEL_SERVICES_PAGE)
+            .filter(|(_, (_, entry))| {
+                !entry.is_root || entry.title == MODEL_SERVICES_PAGE || entry.title == CODING_PARTNERS_PAGE
+            })
             .map(|(logical_index, (index, entry))| {
                 let matching_words = query_words
                     .iter()
@@ -3202,6 +3218,8 @@ impl SettingsWindow {
 
         if self.current_page().title == MODEL_SERVICES_PAGE && focus_content {
             handle_to_focus = Some(self.model_services_view(window, cx).focus_handle(cx));
+        } else if self.current_page().title == CODING_PARTNERS_PAGE && focus_content {
+            handle_to_focus = Some(self.coding_partners_view(window, cx).focus_handle(cx));
         } else if self.navbar_entries[navbar_entry_index].is_root
             || !self.is_nav_entry_visible(navbar_entry_index)
         {
@@ -3641,6 +3659,20 @@ impl SettingsWindow {
             .get_or_insert_with(|| cx.new(|cx| ModelServicesView::new(window, cx)))
             .clone()
     }
+    fn coding_partners_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<CodingPartnersView> {
+        if let Some(view) = &self.coding_partners_view { return view.clone(); }
+        let view = cx.new(|cx| CodingPartnersView::new(window, cx));
+        self.coding_partners_subscription = Some(cx.observe_in(&view, window, |this, view, window, cx| {
+            if view.read(cx).open_model_services {
+                view.update(cx, |view, _| view.open_model_services = false);
+                if let Some(index) = this.navbar_entries.iter().position(|entry| entry.is_root && entry.title == MODEL_SERVICES_PAGE) {
+                    this.open_and_scroll_to_navbar_entry(index, None, true, window, cx);
+                }
+            }
+        }));
+        self.coding_partners_view = Some(view.clone());
+        view
+    }
 
     fn render_page(
         &mut self,
@@ -3698,6 +3730,13 @@ impl SettingsWindow {
             page_header = gpui::Empty.into_any_element();
             page_content = if self.model_services_matches_query {
                 self.model_services_view(window, cx).into_any_element()
+            } else {
+                self.render_no_results(cx).into_any_element()
+            };
+        } else if self.current_page().title == CODING_PARTNERS_PAGE {
+            page_header = gpui::Empty.into_any_element();
+            page_content = if self.coding_partners_matches_query {
+                self.coding_partners_view(window, cx).into_any_element()
             } else {
                 self.render_no_results(cx).into_any_element()
             };
@@ -3891,8 +3930,12 @@ impl SettingsWindow {
                 window.focus_prev(cx);
             }))
             .when(
-                current_sub_page.is_none() && self.current_page().title != MODEL_SERVICES_PAGE,
-                |this| this.vertical_scrollbar_for(&self.list_state, window, cx),
+                current_sub_page.is_none() && self.current_page().title != MODEL_SERVICES_PAGE && self.current_page().title != CODING_PARTNERS_PAGE,
+                |this| this.custom_scrollbars(
+                    Scrollbars::new(ui::ScrollAxes::Vertical).tracked_scroll_handle(&self.list_state),
+                    window,
+                    cx,
+                ),
             )
             .when_some(current_sub_page, |this, current_sub_page| {
                 this.custom_scrollbars(
@@ -3904,8 +3947,8 @@ impl SettingsWindow {
                 )
             })
             .track_focus(&self.content_focus_handle.focus_handle(cx))
-            .pt(if self.current_page().title == MODEL_SERVICES_PAGE { px(0.) } else { px(24.) })
-            .gap(if self.current_page().title == MODEL_SERVICES_PAGE { px(0.) } else { px(16.) })
+            .pt(if self.current_page().title == MODEL_SERVICES_PAGE || self.current_page().title == CODING_PARTNERS_PAGE { px(0.) } else { px(24.) })
+            .gap(if self.current_page().title == MODEL_SERVICES_PAGE || self.current_page().title == CODING_PARTNERS_PAGE { px(0.) } else { px(16.) })
             .flex_1()
             .min_w_0()
             .min_h_0()
@@ -5059,6 +5102,8 @@ pub mod test {
                 has_query: false,
                 model_services_matches_query: true,
                 model_services_view: None,
+                coding_partners_matches_query: true,
+                coding_partners_view: None,
                 content_handles: Vec::default(),
                 search_task: None,
                 sub_page_stack: Vec::default(),
@@ -5187,8 +5232,10 @@ pub mod test {
             sub_page_stack: vec![],
             opening_link: false,
             has_query: false,
-            model_services_matches_query: true,
-            model_services_view: None,
+                model_services_matches_query: true,
+                model_services_view: None,
+                coding_partners_matches_query: true,
+                coding_partners_view: None,
             content_handles: vec![],
             search_task: None,
             focus_handle: cx.focus_handle(),

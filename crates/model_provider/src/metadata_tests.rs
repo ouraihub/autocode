@@ -45,3 +45,18 @@ fn saved_effort_is_clamped_to_declared_levels_only() {
     assert_eq!(clamp_effort(Some(ThinkingLevel::High), &[]), None);
     assert_eq!(clamp_effort(Some(ThinkingLevel::Low), &[ThinkingLevel::High]), None);
 }
+
+#[test]
+fn coding_partner_source_survives_restart_and_legacy_preferences_load() {
+    use crate::{AgentPreferences, BackendTarget, EngineProviderChoice};
+    let mut preferences: AgentPreferences = serde_json::from_str(r#"{"target":"pi","revision":2}"#).unwrap();
+    assert_eq!(preferences.provider_choice, None);
+    for choice in [EngineProviderChoice::Official, EngineProviderChoice::Gateway, EngineProviderChoice::Provider("fenno".into())] {
+        preferences.provider_choice = Some(choice.clone());
+        let saved = serde_json::to_string(&preferences).unwrap();
+        let reopened: AgentPreferences = serde_json::from_str(&saved).unwrap();
+        assert_eq!(reopened.provider_choice, Some(choice));
+        assert_eq!(reopened.target, BackendTarget::Pi);
+        assert_eq!(reopened.revision, 2);
+    }
+}

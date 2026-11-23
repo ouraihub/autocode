@@ -11,8 +11,17 @@ impl ManagedCatalog {
     pub fn default_for(&self, target: BackendTarget) -> Option<&AgentPreferences> {
         self.preferences.iter().find(|preferences| preferences.target == target)
     }
-    pub fn models(&self) -> Vec<agent_harness::Model> {
-        self.providers.iter().filter(|provider| provider.enabled).flat_map(|provider| {
+    pub fn models_for(&self, target: BackendTarget) -> Vec<agent_harness::Model> {
+        let choice = self.default_for(target).and_then(|preferences| preferences.provider_choice.as_ref());
+        self.models_matching(choice)
+    }
+    pub fn models(&self) -> Vec<agent_harness::Model> { self.models_matching(None) }
+    fn models_matching(&self, choice: Option<&model_provider::EngineProviderChoice>) -> Vec<agent_harness::Model> {
+        self.providers.iter().filter(|provider| provider.enabled && match choice {
+            Some(model_provider::EngineProviderChoice::Official) => false,
+            Some(model_provider::EngineProviderChoice::Provider(id)) => &provider.id == id,
+            _ => true,
+        }).flat_map(|provider| {
             provider.models.iter().filter(|model| model.enabled && model.model_type == ModelType::Chat).map(move |model| agent_harness::Model {
                 id: managed_id(&provider.id, &model.model_id), label: format!("{} · {}", provider.name, if model.name.is_empty() { &model.model_id } else { &model.name }),
                 description: Some("Configured model service".into()),
@@ -67,7 +76,7 @@ mod tests {
         let mut disabled = model.clone();
         disabled.model_id = "disabled".into();
         disabled.enabled = false;
-        let catalog = ManagedCatalog {
+        let mut catalog = ManagedCatalog {
             providers: vec![ProviderSnapshot {
                 id: "provider".into(), preset_id: None, revision: 1, name: "Provider".into(), enabled: true,
                 routing: RoutingMode::Direct, auth: AuthMode::None, default_protocol: Protocol::OpenaiChat,
@@ -82,5 +91,14 @@ mod tests {
         ]);
         assert_eq!(models[0].reasoning_levels, vec![ReasoningLevel::Off, ReasoningLevel::Low, ReasoningLevel::Max]);
         assert!(models[1].reasoning_levels.is_empty());
+        let mut preferences = AgentPreferences::native_default(BackendTarget::Pi);
+        preferences.provider_choice = Some(model_provider::EngineProviderChoice::Official);
+        catalog.preferences.push(preferences);
+        assert!(catalog.models_for(BackendTarget::Pi).is_empty());
+        assert_eq!(catalog.models_for(BackendTarget::Omp).iter().map(|model| &model.id).collect::<Vec<_>>(), models.iter().map(|model| &model.id).collect::<Vec<_>>());
+        catalog.preferences[0].provider_choice = Some(model_provider::EngineProviderChoice::Provider("missing".into()));
+        assert!(catalog.models_for(BackendTarget::Pi).is_empty());
+        catalog.preferences[0].provider_choice = Some(model_provider::EngineProviderChoice::Provider("provider".into()));
+        assert_eq!(catalog.models_for(BackendTarget::Pi).iter().map(|model| model.id.clone()).collect::<Vec<_>>(), models.iter().map(|model| model.id.clone()).collect::<Vec<_>>());
     }
 }

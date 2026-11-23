@@ -7,7 +7,7 @@ use theme::SystemAppearance;
 use ui::IntoElement;
 
 use crate::{
-    ActionLink, DynamicItem, MODEL_SERVICES_PAGE, PROJECT, SettingField, SettingItem,
+    ActionLink, DynamicItem, CODING_PARTNERS_PAGE, MODEL_SERVICES_PAGE, PROJECT, SettingField, SettingItem,
     SettingsFieldMetadata, SettingsPage, SettingsPageItem, SubPageLink, USER, active_language,
     all_language_names,
 };
@@ -64,6 +64,10 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
         terminal_page(),
         version_control_page(),
         agent_chat_page(),
+        SettingsPage {
+            title: CODING_PARTNERS_PAGE,
+            items: Box::new([]),
+        },
         SettingsPage {
             title: MODEL_SERVICES_PAGE,
             items: Box::new([]),

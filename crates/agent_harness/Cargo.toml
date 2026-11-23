@@ -22,6 +22,7 @@ indexmap.workspace = true
 log.workspace = true
 semver.workspace = true
 model_provider.workspace = true
+paths.workspace = true
 reqwest.workspace = true
 bytes.workspace = true
 hyper = { version = "1.7", features = ["http1", "server"] }

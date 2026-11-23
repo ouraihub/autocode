@@ -182,7 +182,15 @@ impl ModelServicesView {
         if !provider.models.iter().any(|model| model.model_id == id && model.enabled && model.model_type == model_provider::ModelType::Chat) { return; }
         let service = self.service.clone(); self.busy = true;
         cx.spawn_in(window, async move |this, cx| {
-            let result: anyhow::Result<()> = async { let mut preferences = service.load_preferences(target).await?; let revision = preferences.revision; preferences.source = ConfigSource::Managed; preferences.default_model = Some(ModelSelection::Managed { provider_id: provider.id, model_id: id }); service.save_preferences(target, revision, preferences).await?; Ok(()) }.await;
+            let result: anyhow::Result<()> = async {
+                let mut preferences = service.load_preferences(target).await?;
+                let revision = preferences.revision;
+                preferences.source = ConfigSource::Managed;
+                preferences.provider_choice = Some(model_provider::EngineProviderChoice::Provider(provider.id.clone()));
+                preferences.default_model = Some(ModelSelection::Managed { provider_id: provider.id, model_id: id });
+                service.save_preferences(target, revision, preferences).await?;
+                Ok(())
+            }.await;
             this.update_in(cx, |this, _, cx| { this.busy = false; this.report(if result.is_ok() { t!("Default model saved for new chats").to_string() } else { t!("Could not save default model").to_string() }, result.is_err(), cx); })
         }).detach_and_log_err(cx);
     }

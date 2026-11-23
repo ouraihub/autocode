@@ -247,6 +247,15 @@ pub struct ProviderInput {
     pub enabled: bool,
 }
 
+/// The single model-service source chosen for a coding partner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "provider_id")]
+pub enum EngineProviderChoice {
+    Gateway,
+    Official,
+    Provider(String),
+}
+
 /// Agent-level preferences: which Provider/model to use by default, and which
 /// configuration source (`Native` vs `Managed`) this agent uses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -256,6 +265,9 @@ pub struct AgentPreferences {
     pub source: ConfigSource,
     #[serde(default)]
     pub default_model: Option<ModelSelection>,
+    /// Coding-partner route choice; None preserves each enabled provider's access mode.
+    #[serde(default)]
+    pub provider_choice: Option<EngineProviderChoice>,
     /// Path to the user-chosen executable; `None` means fall back to PATH.
     #[serde(default)]
     pub launch_executable: Option<std::path::PathBuf>,
@@ -270,6 +282,7 @@ impl AgentPreferences {
             target,
             source: ConfigSource::Native,
             default_model: None,
+            provider_choice: None,
             launch_executable: None,
             revision: 0,
         }

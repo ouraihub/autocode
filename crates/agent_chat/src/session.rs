@@ -798,6 +798,11 @@ impl AgentSession {
         self.transcript.entries.drain(index..=index + notices);
         self.send_message(prompt, cx);
     }
+    pub fn retry_latest_undelivered(&mut self, cx: &mut Context<Self>) {
+        if let Some(index) = self.transcript.entries.iter().rposition(|entry| matches!(entry, Entry::User { undelivered: true, .. })) {
+            self.retry_undelivered(index, cx);
+        }
+    }
 
     fn deliver(&mut self, prompt: Prompt, cx: &mut Context<Self>) {
         let stopping = self
@@ -1091,21 +1096,33 @@ impl AgentSession {
         };
 
         let target = agent_harness::routing::backend_target_for_harness(harness.id());
+        let node = target.and_then(|_| crate::dsh_node_runtime(cx));
         let managed = target.and_then(|target| crate::provider_services::ProviderServices::try_global(cx)
             .map(|services| services.managed_request(target, settings.model.clone())));
         let launch = LaunchContext {
             chat_id: self.metadata.id.clone(), generation, launch: None, support, gateway: None,
         };
         let events = cx.spawn(async move |this, cx| {
-            let resolved = match managed {
-                Some(managed) => match managed.resolve().await {
-                    Ok(resolved) => resolved,
-                    Err(error) => {
-                        this.update(cx, |this, cx| { if this.is_current_generation(generation) { this.fail_run(error.to_string(), cx); } }).log_err();
-                        return;
+            let resolution = async {
+                let Some(managed) = managed else { return Ok((None, None)); };
+                let service = managed.service.clone();
+                let target = managed.target;
+                let resolved = managed.resolve().await?;
+                let executable = if resolved.is_none() {
+                    match service.load_preferences(target).await?.launch_executable {
+                        Some(path) => Some(crate::engine_launch::find_program(&path)
+                            .ok_or_else(|| anyhow::anyhow!("Coding partner executable was not found: {}", path.display()))?),
+                        None => None,
                     }
-                },
-                None => None,
+                } else { None };
+                Ok::<_, anyhow::Error>((resolved, executable))
+            }.await;
+            let (resolved, native_executable) = match resolution {
+                Ok(resolution) => resolution,
+                Err(error) => {
+                    this.update(cx, |this, cx| { if this.is_current_generation(generation) { this.fail_run(error.to_string(), cx); } }).log_err();
+                    return;
+                }
             };
             if let Some(resolved) = &resolved {
                 let selected = model_provider::ModelSelection::Managed { provider_id: resolved.provider.id.clone(), model_id: resolved.model_id.clone() };
@@ -1122,8 +1139,18 @@ impl AgentSession {
                 Some(spawn_agent_work(cx, async move {
                     let mut launch = launch;
                     let mut request = request;
+                    if let Some(executable) = native_executable {
+                        launch.launch = Some(agent_harness::LaunchSpec {
+                            executable, prefix_args: Vec::new(), config_dir: None,
+                            env_refs: Vec::new(), env: Vec::new(),
+                        });
+                    }
                     if let (Some(resolved), Some(target)) = (resolved, target) {
                         request.model = Some(resolved.apply(target, &mut launch).await?);
+                    }
+                    if let Some(target) = target {
+                        crate::engine_launch::apply(target, node, &mut launch).await
+                            .map_err(|error| agent_harness::HarnessError::Protocol(error.to_string()))?;
                     }
                     harness.run(request, controls, launch).await
                 }))
@@ -1721,7 +1748,7 @@ impl AgentSession {
         self.save_entries(cx);
     }
 
-    fn push_notice(&mut self, text: String, is_error: bool, cx: &mut Context<Self>) {
+    pub(crate) fn push_notice(&mut self, text: String, is_error: bool, cx: &mut Context<Self>) {
         self.transcript.push_notice(text, is_error);
         self.save_entries(cx);
         cx.notify();

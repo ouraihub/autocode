@@ -26,6 +26,7 @@ pub struct AgentChatSettings {
     pub default_effort: Option<ReasoningLevel>,
     default_permissions: [(AgentKind, PermissionMode); 6],
     agents: Vec<AgentKind>,
+    pub default_agent: Option<AgentKind>,
     pub steer_while_working: bool,
     pub confirm_quit_while_working: bool,
     pub prevent_idle_sleep: bool,
@@ -73,6 +74,10 @@ impl Settings for AgentChatSettings {
         if agents.is_empty() {
             agents = AgentKind::ALL.to_vec();
         }
+        let default_agent = content.default_agent.and_then(AgentKind::from_setting);
+        if let Some(default_agent) = default_agent {
+            agents.sort_by_key(|kind| *kind != default_agent);
+        }
         Self {
             enabled: content.enabled.unwrap_or(true),
             dock: content.dock.unwrap_or(DockSide::Left),
@@ -97,6 +102,7 @@ impl Settings for AgentChatSettings {
                 (AgentKind::Dsh, PermissionMode::Auto),
             ],
             agents,
+            default_agent,
             steer_while_working: content.while_working.unwrap_or_default() == AgentChatWhileWorking::Steer,
             confirm_quit_while_working: content.confirm_quit_while_working.unwrap_or(true),
             prevent_idle_sleep: content.prevent_idle_sleep.unwrap_or(true),

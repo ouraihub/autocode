@@ -586,7 +586,13 @@ impl AgentPanel {
                                 move |window, cx| {
                                     let workspace = workspace.clone();
                                     let agents = AgentChatSettings::get_global(cx).agents().to_vec();
-                                    Some(ContextMenu::build(window, cx, move |menu, _, _| {
+                                    Some(ContextMenu::build(window, cx, move |menu, _, cx| {
+                                        let menu = if let Some(kind) = AgentChatSettings::get_global(cx).default_agent {
+                                            let workspace = workspace.clone();
+                                            menu.entry(t!("New Chat"), None, move |window, cx| {
+                                                workspace.update(cx, |workspace, cx| new_chat(workspace, kind, window, cx)).log_err();
+                                            }).separator()
+                                        } else { menu };
                                         agents.into_iter().fold(menu, |menu, kind| {
                                             let workspace = workspace.clone();
                                             menu.item(ui::ContextMenuEntry::new(kind.label()).icon(kind.icon()).handler(move |window, cx| {

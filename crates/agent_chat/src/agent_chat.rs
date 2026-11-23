@@ -6,6 +6,9 @@ mod chat_view;
 mod commit_message;
 mod model_picker;
 mod model_services;
+mod dsh_install;
+mod engine_launch;
+mod coding_partners;
 mod notifications;
 mod provider_panel;
 mod provider_services;
@@ -20,6 +23,10 @@ pub use agent_panel::AgentPanel;
 pub use chat_panel::ChatPanel;
 pub use chat_view::ChatView;
 pub use model_services::ModelServicesView;
+pub use coding_partners::CodingPartnersView;
+pub(crate) fn dsh_node_runtime(cx: &App) -> Option<node_runtime::NodeRuntime> {
+    workspace::AppState::try_global(cx).map(|state| state.node_runtime.clone())
+}
 pub use commit_message::{
     commit_message_agent_label, commit_message_menu, generate_commit_message,
 };

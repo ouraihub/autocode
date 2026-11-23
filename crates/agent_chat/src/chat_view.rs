@@ -15,7 +15,7 @@ mod side_pane;
 mod todo_panel;
 
 use crate::{
-    AgentChatSettings, MoveChatToPanel, MoveChatToTab, RenameChat, Send, Stop, SubmitAnswer,
+    AgentChatSettings, AgentKind, MoveChatToPanel, MoveChatToTab, RenameChat, Send, Stop, SubmitAnswer,
     chat_style::{
         Chip, accent, flavour_seed, flavour_word, format_elapsed, gradient_spinner, hairline, ink,
         mix, page, text_faint, ui, wash,
@@ -2111,6 +2111,7 @@ impl ChatView {
     }
 
     fn render_error(&self, index: usize, text: SharedString, cx: &Context<Self>) -> AnyElement {
+        let dsh_missing = self.session.read(cx).kind() == AgentKind::Dsh && text.to_lowercase().contains("dsh");
         let danger = cx.theme().status().error;
         let danger_muted = mix(danger, cx.theme().colors().text, 0.28).opacity(0.8);
         let copy_key: SharedString = format!("copy-error-{index}").into();
@@ -2186,13 +2187,24 @@ impl ChatView {
                                     })),
                             ),
                     )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .w_full()
-                            .text_color(cx.theme().colors().text.opacity(0.8))
-                            .child(text),
-                    ),
+                    .child(div().min_w_0().w_full().text_color(cx.theme().colors().text.opacity(0.8)).child(text))
+                    .when(dsh_missing, |this| {
+                        this.child(h_flex().gap(px(8.)).pt(px(8.)).child(
+                            Button::new("install-dsh", t!("Install DSH"))
+                                .style(ButtonStyle::Outlined)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    let Some(node) = crate::dsh_node_runtime(cx) else { return; };
+                                    let session = this.session.clone();
+                                    cx.spawn_in(window, async move |this, cx| {
+                                        match crate::engine_launch::install(model_provider::BackendTarget::Dsh, Some(node)).await {
+                                            Ok(()) => { session.update(cx, |session, cx| session.retry_latest_undelivered(cx)); }
+                                            Err(error) => { session.update(cx, |session, cx| session.push_notice(format!("{}: {error}", t!("Coding partner operation failed")), true, cx)); }
+                                        }
+                                        this.update(cx, |_, cx| cx.notify())
+                                    }).detach_and_log_err(cx);
+                                }))
+                        ))
+                    })
             )
             .into_any_element()
     }

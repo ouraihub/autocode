@@ -1,7 +1,6 @@
 //! DSH ACP adapter over JSON-RPC 2.0 on stdio.
 
 use std::path::PathBuf;
-
 use async_trait::async_trait;
 use futures::{StreamExt as _, stream::BoxStream};
 use serde_json::{Value, json};
@@ -17,7 +16,8 @@ pub struct DshHarness { executable: Option<PathBuf> }
 impl DshHarness {
     pub fn new() -> Self { Self::default() }
     pub fn with_executable(mut self, executable: impl Into<PathBuf>) -> Self { self.executable = Some(executable.into()); self }
-    fn executable(&self) -> PathBuf { self.executable.clone().or_else(|| std::env::var_os("DSH_EXECUTABLE").map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("dsh")) }
+    pub(crate) fn executable_path(&self) -> PathBuf { self.executable.clone().or_else(|| std::env::var_os("DSH_EXECUTABLE").map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("dsh")) }
+    fn executable(&self) -> PathBuf { self.executable_path() }
 }
 
 #[async_trait]
@@ -27,13 +27,14 @@ impl Harness for DshHarness {
     fn supports_steering(&self) -> bool { false }
     fn steering_mode(&self) -> SteeringMode { SteeringMode::TurnBoundary }
     fn reasoning_levels(&self) -> &[ReasoningLevel] { &[ReasoningLevel::Off, ReasoningLevel::Minimal, ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::High, ReasoningLevel::XHigh, ReasoningLevel::Max] }
+    fn installed(&self) -> bool { self.executable_path().is_file() || crate::executable::find_on_paths("dsh", Vec::new()).is_some() }
     async fn models(&self, _context: CatalogContext) -> Result<Vec<Model>, HarnessError> { Ok(Vec::new()) }
     async fn run(&self, request: RunRequest, controls: RunControls, launch: LaunchContext) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         if let Some(level) = request.reasoning { level.thinking_level()?; }
-        let executable = launch.launch.as_ref().map(|s| s.executable.clone()).unwrap_or_else(|| self.executable());
+        let (executable, prefix_args) = launch.launch.as_ref().map(|spec| (spec.executable.clone(), spec.prefix_args.clone())).unwrap_or_else(|| (self.executable(), Vec::new()));
         let mut command = command(&executable);
         if let Some(spec) = &launch.launch {
-            command.args(&spec.prefix_args);
+            command.args(&prefix_args);
             for (name, value) in &spec.env { command.env(name, value.expose()); }
         }
         command.args(["--profile", "acp"]);

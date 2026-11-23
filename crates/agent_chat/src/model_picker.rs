@@ -1602,8 +1602,11 @@ impl Render for ModelPicker {
         let kind = session.kind();
         let settings = session.settings().clone();
         let mut models = self.store.read(cx).picker_models(kind, settings.native_model());
-        if agent_harness::routing::backend_target_for_harness(kind.harness_id()).is_some() {
-            if let Some(services) = crate::provider_services::ProviderServices::try_global(cx) { models.extend(services.models()); }
+        if let Some(target) = agent_harness::routing::backend_target_for_harness(kind.harness_id()) {
+            if let Some(services) = crate::provider_services::ProviderServices::try_global(cx) {
+                if services.default_for(target).is_some_and(|preferences| matches!(preferences.provider_choice, Some(model_provider::EngineProviderChoice::Gateway | model_provider::EngineProviderChoice::Provider(_)))) { models.clear(); }
+                models.extend(services.models_for(target));
+            }
         }
         let selection = Selection::resolve(&models, &settings);
         let full = AgentChatSettings::get_global(cx).model_picker == AgentChatModelPickerLayout::Full;
