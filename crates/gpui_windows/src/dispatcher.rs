@@ -17,7 +17,7 @@ use windows::Win32::{
         TP_CALLBACK_ENVIRON_V3, TP_CALLBACK_PRIORITY, TP_CALLBACK_PRIORITY_HIGH,
         TP_CALLBACK_PRIORITY_LOW, TP_CALLBACK_PRIORITY_NORMAL, TrySubmitThreadpoolCallback,
     },
-    UI::WindowsAndMessaging::PostMessageW,
+    UI::WindowsAndMessaging::{IsWindow, PostMessageW},
 };
 
 use crate::{HWND, SafeHwnd, WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD};
@@ -119,14 +119,18 @@ impl PlatformDispatcher for WindowsDispatcher {
         match self.main_sender.send(priority, runnable) {
             Ok(_) => {
                 if !self.wake_posted.swap(true, Ordering::AcqRel) {
-                    unsafe {
+                    let handle = self.platform_window_handle.as_raw();
+                    let posted = unsafe {
                         PostMessageW(
-                            Some(self.platform_window_handle.as_raw()),
+                            Some(handle),
                             WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD,
                             WPARAM(self.validation_number),
                             LPARAM(0),
                         )
-                        .log_err();
+                    };
+                    // The platform window is gone only during shutdown; nothing is left to wake.
+                    if unsafe { IsWindow(Some(handle)).as_bool() } {
+                        posted.log_err();
                     }
                 }
             }

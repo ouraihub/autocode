@@ -611,9 +611,13 @@ impl Drop for WindowsWindow {
             .executor
             .spawn(async move {
                 let handle = this.hwnd;
+                // Closing a window lets DefWindowProc destroy the HWND before this drop runs;
+                // cleaning it again only logs ERROR_INVALID_WINDOW_HANDLE.
                 unsafe {
-                    RevokeDragDrop(handle).log_err();
-                    DestroyWindow(handle).log_err();
+                    if IsWindow(Some(handle)).as_bool() {
+                        RevokeDragDrop(handle).log_err();
+                        DestroyWindow(handle).log_err();
+                    }
                 }
             })
             .detach();

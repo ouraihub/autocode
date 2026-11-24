@@ -155,8 +155,8 @@ Service/model changes affect a newly prepared run; they do not rewrite an alread
 running child process. An unavailable provider/model or credential reports an error
 instead of silently switching to a different service.
 
-The model-service surface follows auto-craft's provider page and its locked
-LumaKit presentation (`ce23b868`): 208px provider rail, 36px provider rows,
+The model-service surface follows auto-craft's provider page and LumaKit
+presentation, checked against LumaKit `6ce7bb51`: 208px provider rail, 36px provider rows,
 16px detail-section spacing, grouped 32px model rows and separate editor dialogs.
 Narrow content stacks the rail above the detail. The existing autocode settings
 navigation and theme remain the host; no second GPUI runtime is embedded.
